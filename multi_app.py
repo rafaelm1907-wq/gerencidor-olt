@@ -19,7 +19,6 @@ from app import disconnect_reason_text, onts_text, pon_identity
 import auth_store
 import olt_registry
 import autofind_query
-import license_manager
 
 ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/var/lib/olt-vision"))
@@ -28,7 +27,6 @@ def configured_olts():
 HTML = (ROOT / "multi_index.html").read_text(encoding="utf-8")
 LOGIN_HTML = (ROOT / "login.html").read_text(encoding="utf-8")
 ADMIN_HTML = (ROOT / "admin.html").read_text(encoding="utf-8")
-LICENSE_HTML = (ROOT / "license.html").read_text(encoding="utf-8")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
 VIEWER_USERNAME = os.environ.get("VIEWER_USERNAME", "viewer")
 CACHE = {"at": 0.0, "olts": [], "refreshing": False}
@@ -181,10 +179,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def admin_page(self, session, notice="", discovery=None, status=200):
         viewer = auth_store.user_info(VIEWER_USERNAME)
-        license_status = license_manager.status()
-        license_line = license_status.get("message", "Estado desconhecido")
-        if license_status.get("expires_at"):
-            license_line += f' Vencimento: {license_status["expires_at"]}'
         discovery_html = ""
         if discovery:
             boards = ", ".join(discovery["boards"])
@@ -220,7 +214,6 @@ class Handler(BaseHTTPRequestHandler):
                 .replace("__NEXT_ENABLED__", "0" if viewer and viewer["enabled"] else "1")
                 .replace("__ACTION__", "Desativar" if viewer and viewer["enabled"] else "Ativar")
                 .replace("__NOTICE__", html.escape(notice))
-                .replace("__LICENSE_STATUS__", html.escape(license_line))
                 .replace("__DISCOVERY__", discovery_html)
                 .replace("__OLT_LIST__", existing))
         self.send_body(status, body)
@@ -255,17 +248,6 @@ class Handler(BaseHTTPRequestHandler):
         body = LOGIN_HTML.replace("__ERROR__", html.escape(error))
         self.send_body(status, body)
 
-    def license_page(self, license_status, status=200):
-        detail = ""
-        if license_status.get("expires_at"):
-            detail = f'Vencimento: {license_status["expires_at"]}'
-        elif license_status.get("error"):
-            detail = license_status["error"]
-        body = (LICENSE_HTML.replace("__MESSAGE__", html.escape(license_status.get("message", "Licença indisponível.")))
-                .replace("__DETAIL__", html.escape(detail))
-                .replace("__STATUS_CLASS__", "ok" if license_status.get("active") else "error"))
-        self.send_body(status, body)
-
     def form(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -283,22 +265,6 @@ class Handler(BaseHTTPRequestHandler):
         form = self.form()
         if form is None:
             self.send_error(400)
-            return
-        if path == "/license/activate":
-            try:
-                license_manager.set_license_key(form.get("license_key", ""))
-                license_status = license_manager.status(force=True)
-            except ValueError as exc:
-                self.license_page({"active": False, "message": str(exc)}, 400)
-                return
-            if not license_status.get("active"):
-                self.license_page(license_status, 403)
-                return
-            self.redirect("/login")
-            return
-        license_status = license_manager.status()
-        if not license_status.get("active"):
-            self.license_page(license_status, 403)
             return
         if path == "/login":
             user = auth_store.authenticate(form.get("username", "")[:64], form.get("password", ""), self.client_address[0])
@@ -324,10 +290,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if session["role"] != "admin":
             self.send_error(403)
-            return
-        if path == "/admin/license/validate":
-            license_status = license_manager.status(force=True)
-            self.admin_page(session, license_status.get("message", "Validação concluída."))
             return
         if path == "/admin/olts/probe":
             try:
@@ -376,16 +338,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         request = urlsplit(self.path)
-        license_status = license_manager.status()
-        if request.path == "/license":
-            if license_status.get("active"):
-                self.redirect("/login")
-            else:
-                self.license_page(license_status)
-            return
-        if not license_status.get("active"):
-            self.redirect("/license")
-            return
         session = self.session()
         if request.path == "/login":
             if session: self.redirect("/")

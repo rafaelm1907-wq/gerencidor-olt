@@ -46,8 +46,6 @@ O instalador:
 
 Abra `http://IP-DO-SERVIDOR:6000`, entre como `admin` e acesse **Administração → Adicionar OLT**.
 
-Na primeira abertura, informe a chave na tela de ativação. A licença é validada no servidor e a aplicação usa o intervalo e a tolerância offline retornados pelo validador. A chave fica somente em `/etc/olt-vision/license.env`, com permissão `600`.
-
 ## Cadastro de OLT
 
 Informe no painel:
@@ -132,3 +130,4 @@ python3 -m unittest -v
 ```
 
 Os testes usam bancos temporários e não acessam OLTs reais.
+
