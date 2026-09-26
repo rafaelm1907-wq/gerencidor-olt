@@ -1,0 +1,19 @@
+[Unit]
+Description=LVL gerenciador de OLTs - coleta rapida das PONs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/olt-vision
+EnvironmentFile=/etc/olt-vision.env
+ExecStart=/usr/bin/python3 /opt/olt-vision/fast_collector.py
+Restart=always
+RestartSec=15
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,23 @@
+[Unit]
+Description=LVL gerenciador de OLTs - alertas Telegram
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/olt-vision
+EnvironmentFile=/etc/olt-vision/telegram.env
+ExecStart=/usr/bin/python3 /opt/olt-vision/telegram_dispatcher.py
+Restart=always
+RestartSec=20
+Nice=10
+CPUQuota=20%
+MemoryMax=128M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/olt-vision
+
+[Install]
+WantedBy=multi-user.target

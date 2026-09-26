@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.db
+*.db-*
+*.sqlite*
+*.log
+.env
+.env.*
+!.env.example
+telegram.env
+olts/*.env
+backups/
+

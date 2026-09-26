@@ -1,0 +1,17 @@
+[Unit]
+Description=LVL gerenciador de OLTs - painel
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/olt-vision
+EnvironmentFile=/etc/olt-vision.env
+Environment=PORT=6000
+ExecStart=/usr/bin/python3 /opt/olt-vision/multi_app.py
+Restart=always
+RestartSec=5
+MemoryMax=256M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

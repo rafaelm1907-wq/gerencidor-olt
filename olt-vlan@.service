@@ -1,0 +1,21 @@
+[Unit]
+Description=LVL gerenciador de OLTs - VLANs de %i
+After=network-online.target olt-collector@%i.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/olt-vision
+EnvironmentFile=/etc/olt-vision.env
+EnvironmentFile=/etc/olt-vision/olts/%i.env
+Environment=VLAN_POLL_INTERVAL=1800
+ExecStart=/usr/bin/python3 /opt/olt-vision/vlan_collector.py
+Restart=always
+RestartSec=20
+Nice=12
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=192M
+
+[Install]
+WantedBy=multi-user.target

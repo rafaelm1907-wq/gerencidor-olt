@@ -1,0 +1,20 @@
+[Unit]
+Description=LVL gerenciador de OLTs - coleta de %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/olt-vision
+EnvironmentFile=/etc/olt-vision.env
+EnvironmentFile=/etc/olt-vision/olts/%i.env
+ExecStart=/usr/bin/python3 /opt/olt-vision/app.py
+Restart=always
+RestartSec=15
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=40%
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
