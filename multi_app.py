@@ -219,10 +219,6 @@ class Handler(BaseHTTPRequestHandler):
         can_manage_olts = session["role"] == "superadmin"
         roles = '<option value="admin">Admin</option><option value="viewer">Visualização</option><option value="superadmin">Superadmin</option>' if can_manage_olts else '<option value="viewer">Visualização</option>'
         body = (ADMIN_HTML.replace("__CSRF__", html.escape(session["csrf"]))
-                .replace("__VIEWER_STATUS__", "Ativo" if viewer and viewer["enabled"] else "Desativado")
-                .replace("__VIEWER_USERNAME__", html.escape(VIEWER_USERNAME))
-                .replace("__NEXT_ENABLED__", "0" if viewer and viewer["enabled"] else "1")
-                .replace("__ACTION__", "Desativar" if viewer and viewer["enabled"] else "Ativar")
                 .replace("__NOTICE__", html.escape(notice))
                 .replace("__LICENSE_STATUS__", html.escape(license_line))
                 .replace("__OLT_SECTION_CLASS__", "" if can_manage_olts else "hidden")
