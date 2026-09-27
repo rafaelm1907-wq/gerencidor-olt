@@ -215,6 +215,7 @@ class Handler(BaseHTTPRequestHandler):
                               f'<p>{len(discovery["ports"])} portas detectadas: {html.escape(ports)}</p>{confirm}</div>')
         existing = "".join(f'<li>{html.escape(item["name"])} · {html.escape(item["host"])}</li>' for item in configured_olts())
         user_rows = "".join(f'<li><strong>{html.escape(item["username"])}</strong> · {html.escape(item["role"].replace("superadmin", "Superadmin").replace("viewer", "Visualização").replace("admin", "Admin"))} · {"Ativo" if item["enabled"] else "Desativado"}</li>' for item in users) or "<li>Nenhum usuário cadastrado.</li>"
+        password_targets = "".join(f'<option value="{html.escape(item["username"])}">{html.escape(item["username"])}</option>' for item in users)
         can_manage_olts = session["role"] == "superadmin"
         roles = '<option value="admin">Admin</option><option value="viewer">Visualização</option><option value="superadmin">Superadmin</option>' if can_manage_olts else '<option value="viewer">Visualização</option>'
         body = (ADMIN_HTML.replace("__CSRF__", html.escape(session["csrf"]))
@@ -227,6 +228,7 @@ class Handler(BaseHTTPRequestHandler):
                 .replace("__OLT_SECTION_CLASS__", "" if can_manage_olts else "hidden")
                 .replace("__USER_ROLES__", roles)
                 .replace("__USER_LIST__", user_rows)
+                .replace("__PASSWORD_TARGETS__", password_targets)
                 .replace("__USER_LIMIT_NOTE__", "Você pode criar usuários Admin, Visualização e Superadmin." if can_manage_olts else "Você pode cadastrar até 3 usuários de visualização; cada um pode manter até 2 sessões abertas.")
                 .replace("__DISCOVERY__", discovery_html)
                 .replace("__OLT_LIST__", existing))
@@ -342,6 +344,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.admin_page(session, str(exc), status=400)
                 return
             self.redirect("/options?updated=user")
+            return
+        if path == "/options/users/password":
+            try:
+                auth_store.set_password_scoped(session, form.get("username", ""), form.get("password", ""))
+            except ValueError as exc:
+                self.admin_page(session, str(exc), status=400)
+                return
+            self.redirect("/options?updated=password")
             return
         if session["role"] != "superadmin":
             self.send_error(403)
@@ -472,7 +482,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(403)
                 return
             updated = parse_qs(request.query).get("updated", [""])[0]
-            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Usuário cadastrado." if updated == "user" else "Alteração salva." if updated in ("password", "status") else ""
+            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Usuário cadastrado." if updated == "user" else "Senha alterada." if updated == "password" else "Alteração salva." if updated == "status" else ""
             self.admin_page(session, notice)
             return
         if request.path == "/onts.txt":

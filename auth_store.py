@@ -104,7 +104,7 @@ def managed_users(actor):
         if actor["role"] == "superadmin":
             rows = db.execute("SELECT username,role,enabled,created_at FROM users ORDER BY role,username").fetchall()
         elif actor["role"] == "admin":
-            rows = db.execute("SELECT username,role,enabled,created_at FROM users WHERE created_by=? ORDER BY username", (actor["id"],)).fetchall()
+            rows = db.execute("SELECT username,role,enabled,created_at FROM users WHERE created_by=? OR id=? ORDER BY username", (actor["id"], actor["id"])).fetchall()
         else: rows = []
         return [dict(row) for row in rows]
 
@@ -162,6 +162,15 @@ def set_password(username, new_password):
         db.execute("UPDATE users SET salt=?,password_hash=?,updated_at=? WHERE username=?",
                    (salt,password_hash(new_password,salt),int(time.time()),username))
         db.execute("DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE username=?)",(username,))
+
+def set_password_scoped(actor, username, new_password):
+    with database() as db:
+        target = db.execute("SELECT id,role,created_by FROM users WHERE username=?", (username,)).fetchone()
+    if not target: raise ValueError("Usuário não encontrado")
+    if actor["role"] == "admin" and not (target["id"] == actor["id"] or (target["role"] == "viewer" and target["created_by"] == actor["id"])):
+        raise ValueError("Administradores podem alterar somente a senha dos usuários de visualização que cadastraram")
+    if actor["role"] not in ("superadmin", "admin"): raise ValueError("Sem permissão para alterar senha")
+    set_password(username, new_password)
 
 def set_enabled(username, enabled):
     if username == "admin": raise ValueError("Admin não pode ser desativado")
