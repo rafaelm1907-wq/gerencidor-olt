@@ -18,7 +18,7 @@ install -d -m 0755 "$APP_DIR"
 install -d -m 0700 "$CONFIG_DIR/olts"
 install -d -m 0700 "$DATA_DIR"
 
-for file in app.py auth_store.py autofind_query.py fast_collector.py huawei_ssh.py huawei_telnet.py multi_app.py olt_registry.py telegram_dispatcher.py vlan_collector.py prune_history.py migrate_performance.py setup_users.py admin.html login.html multi_index.html; do
+for file in app.py auth_store.py autofind_query.py fast_collector.py huawei_ssh.py huawei_telnet.py license_manager.py multi_app.py olt_registry.py telegram_dispatcher.py vlan_collector.py prune_history.py migrate_performance.py setup_users.py admin.html license.html login.html multi_index.html; do
   install -m 0644 "$SOURCE_DIR/$file" "$APP_DIR/$file"
 done
 
@@ -32,6 +32,7 @@ fi
 if [[ ! -e "$CONFIG_DIR/telegram.env" ]]; then
   install -m 0600 "$SOURCE_DIR/telegram.env.example" "$CONFIG_DIR/telegram.env"
 fi
+if [[ ! -e "$CONFIG_DIR/license.env" ]]; then install -m 0600 /dev/null "$CONFIG_DIR/license.env"; fi
 
 for unit in olt-collector@.service olt-fast.service olt-multi-web.service olt-telegram.service olt-vlan@.service; do
   install -m 0644 "$SOURCE_DIR/$unit" "/etc/systemd/system/$unit"
