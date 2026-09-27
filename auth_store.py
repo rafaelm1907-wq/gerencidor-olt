@@ -10,6 +10,8 @@ from pathlib import Path
 
 DB_PATH = Path(os.environ.get("AUTH_DB", "/var/lib/olt-vision/auth.db"))
 SESSION_SECONDS = 12 * 60 * 60
+ROLES = ("superadmin", "admin", "viewer")
+SESSION_LIMITS = {"superadmin": None, "admin": 1, "viewer": 2}
 
 @contextmanager
 def database():
@@ -29,9 +31,10 @@ def initialize():
         PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('admin','viewer')),
+            role TEXT NOT NULL CHECK(role IN ('superadmin','admin','viewer')),
             salt BLOB NOT NULL, password_hash BLOB NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
+            created_by INTEGER,
             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS sessions (
@@ -46,6 +49,24 @@ def initialize():
         );
         CREATE INDEX IF NOT EXISTS idx_login_failures_time ON login_failures(created_at);
         """)
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+        if "created_by" not in columns:
+            # Migração da versão com apenas admin/viewer. As sessões são removidas
+            # para que a troca de perfil seja aplicada já no próximo login.
+            db.execute("DELETE FROM sessions")
+            db.execute("PRAGMA foreign_keys=OFF")
+            db.execute("""CREATE TABLE users_new (
+                id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('superadmin','admin','viewer')),
+                salt BLOB NOT NULL, password_hash BLOB NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, created_by INTEGER,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
+            db.execute("""INSERT INTO users_new(id,username,role,salt,password_hash,enabled,created_at,updated_at)
+                        SELECT id,username,CASE WHEN role='admin' THEN 'superadmin' ELSE 'viewer' END,
+                        salt,password_hash,enabled,created_at,updated_at FROM users""")
+            db.execute("DROP TABLE users")
+            db.execute("ALTER TABLE users_new RENAME TO users")
+            db.execute("PRAGMA foreign_keys=ON")
     os.chmod(DB_PATH, 0o600)
 
 def password_hash(password, salt):
@@ -58,6 +79,34 @@ def seed_user(username, password, role):
     with database() as db:
         db.execute("INSERT OR IGNORE INTO users(username,role,salt,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?)",
                    (username,role,salt,password_hash(password,salt),now,now))
+
+def create_user(actor, username, password, role):
+    username = (username or "").strip()
+    if role not in ROLES: raise ValueError("Perfil inválido")
+    if not 3 <= len(username) <= 64 or not all(char.isalnum() or char in "._-" for char in username):
+        raise ValueError("Usuário deve ter entre 3 e 64 caracteres e usar somente letras, números, ponto, hífen ou sublinhado")
+    if not password or len(password) < 8: raise ValueError("Senha deve ter ao menos 8 caracteres")
+    if actor["role"] == "admin":
+        if role != "viewer": raise ValueError("Administradores podem criar somente usuários de visualização")
+        with database() as db:
+            count = db.execute("SELECT count(*) FROM users WHERE created_by=? AND role='viewer'", (actor["id"],)).fetchone()[0]
+            if count >= 3: raise ValueError("Este administrador já cadastrou o limite de 3 usuários de visualização")
+    elif actor["role"] != "superadmin": raise ValueError("Sem permissão para cadastrar usuários")
+    salt = os.urandom(16); now = int(time.time())
+    try:
+        with database() as db:
+            db.execute("INSERT INTO users(username,role,salt,password_hash,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                       (username,role,salt,password_hash(password,salt),actor["id"],now,now))
+    except sqlite3.IntegrityError as exc: raise ValueError("Este usuário já existe") from exc
+
+def managed_users(actor):
+    with database() as db:
+        if actor["role"] == "superadmin":
+            rows = db.execute("SELECT username,role,enabled,created_at FROM users ORDER BY role,username").fetchall()
+        elif actor["role"] == "admin":
+            rows = db.execute("SELECT username,role,enabled,created_at FROM users WHERE created_by=? ORDER BY username", (actor["id"],)).fetchall()
+        else: rows = []
+        return [dict(row) for row in rows]
 
 def user_info(username):
     with database() as db:
@@ -84,6 +133,11 @@ def create_session(user_id):
     now = int(time.time())
     with database() as db:
         db.execute("DELETE FROM sessions WHERE expires_at < ?",(now,))
+        user = db.execute("SELECT role FROM users WHERE id=? AND enabled=1", (user_id,)).fetchone()
+        if not user: return None
+        limit = SESSION_LIMITS.get(user["role"])
+        if limit is not None and db.execute("SELECT count(*) FROM sessions WHERE user_id=?", (user_id,)).fetchone()[0] >= limit:
+            return None
         db.execute("INSERT INTO sessions(token_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)",
                    (hashlib.sha256(token.encode()).hexdigest(),user_id,csrf,now+SESSION_SECONDS))
     return token

@@ -23,7 +23,6 @@ def upsert(username, secret, role):
 if __name__ == "__main__":
     auth_store.initialize()
     viewer = os.environ.get("VIEWER_USERNAME", "viewer")
-    upsert("admin", password("Senha inicial do administrador: ", "ADMIN_PASSWORD"), "admin")
+    upsert("admin", password("Senha inicial do Superadmin: ", "ADMIN_PASSWORD"), "superadmin")
     upsert(viewer, password(f"Senha inicial do usuário {viewer}: ", "VIEWER_PASSWORD"), "viewer")
     print(f"Usuários admin e {viewer} configurados.")
-

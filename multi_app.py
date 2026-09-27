@@ -180,7 +180,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_): pass
 
     def admin_page(self, session, notice="", discovery=None, status=200):
-        viewer = auth_store.user_info(VIEWER_USERNAME)
+        users = auth_store.managed_users(session)
         license_status = license_manager.status()
         license_line = license_status.get("message", "Estado desconhecido")
         if license_status.get("expires_at"): license_line += f' Vencimento: {license_status["expires_at"][:10]}.'
@@ -214,6 +214,9 @@ class Handler(BaseHTTPRequestHandler):
                               f'<div class="checks">{snmp_card}{cli_card}</div><p>Placas: {html.escape(boards)}</p>'
                               f'<p>{len(discovery["ports"])} portas detectadas: {html.escape(ports)}</p>{confirm}</div>')
         existing = "".join(f'<li>{html.escape(item["name"])} · {html.escape(item["host"])}</li>' for item in configured_olts())
+        user_rows = "".join(f'<li><strong>{html.escape(item["username"])}</strong> · {html.escape(item["role"].replace("superadmin", "Superadmin").replace("viewer", "Visualização").replace("admin", "Admin"))} · {"Ativo" if item["enabled"] else "Desativado"}</li>' for item in users) or "<li>Nenhum usuário cadastrado.</li>"
+        can_manage_olts = session["role"] == "superadmin"
+        roles = '<option value="admin">Admin</option><option value="viewer">Visualização</option><option value="superadmin">Superadmin</option>' if can_manage_olts else '<option value="viewer">Visualização</option>'
         body = (ADMIN_HTML.replace("__CSRF__", html.escape(session["csrf"]))
                 .replace("__VIEWER_STATUS__", "Ativo" if viewer and viewer["enabled"] else "Desativado")
                 .replace("__VIEWER_USERNAME__", html.escape(VIEWER_USERNAME))
@@ -221,6 +224,10 @@ class Handler(BaseHTTPRequestHandler):
                 .replace("__ACTION__", "Desativar" if viewer and viewer["enabled"] else "Ativar")
                 .replace("__NOTICE__", html.escape(notice))
                 .replace("__LICENSE_STATUS__", html.escape(license_line))
+                .replace("__OLT_SECTION_CLASS__", "" if can_manage_olts else "hidden")
+                .replace("__USER_ROLES__", roles)
+                .replace("__USER_LIST__", user_rows)
+                .replace("__USER_LIMIT_NOTE__", "Você pode criar usuários Admin, Visualização e Superadmin." if can_manage_olts else "Você pode cadastrar até 3 usuários de visualização; cada um pode manter até 2 sessões abertas.")
                 .replace("__DISCOVERY__", discovery_html)
                 .replace("__OLT_LIST__", existing))
         self.send_body(status, body)
@@ -302,6 +309,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.login_page("Usuário ou senha inválidos, ou tentativas em excesso.", 401)
                 return
             token = auth_store.create_session(user["id"])
+            if not token:
+                self.login_page("Limite de sessões simultâneas atingido para este usuário.", 403)
+                return
             flags = "; Secure" if COOKIE_SECURE else ""
             self.redirect("/", f"olt_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={auth_store.SESSION_SECONDS}{flags}")
             return
@@ -318,12 +328,23 @@ class Handler(BaseHTTPRequestHandler):
             flags = "; Secure" if COOKIE_SECURE else ""
             self.redirect("/login", f"olt_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{flags}")
             return
-        if session["role"] != "admin":
+        if session["role"] not in ("superadmin", "admin"):
             self.send_error(403)
             return
         if path == "/admin/license/validate":
             state = license_manager.status(force=True)
             self.admin_page(session, state.get("message", "Validação concluída."))
+            return
+        if path == "/options/users/add":
+            try:
+                auth_store.create_user(session, form.get("username", ""), form.get("password", ""), form.get("role", ""))
+            except ValueError as exc:
+                self.admin_page(session, str(exc), status=400)
+                return
+            self.redirect("/options?updated=user")
+            return
+        if session["role"] != "superadmin":
+            self.send_error(403)
             return
         if path == "/admin/olts/probe":
             try:
@@ -446,12 +467,12 @@ class Handler(BaseHTTPRequestHandler):
             onts.sort(key=lambda item: item["number"] if isinstance(item["number"], int) else 999999)
             self.send_body(200, json.dumps({"olt": olt_id, "sfp": sfp, "collected_at": data["ont_collected_at"], "onts": onts}, ensure_ascii=False), "application/json; charset=utf-8")
             return
-        if request.path == "/admin":
-            if session["role"] != "admin":
+        if request.path in ("/admin", "/options"):
+            if session["role"] not in ("superadmin", "admin"):
                 self.send_error(403)
                 return
             updated = parse_qs(request.query).get("updated", [""])[0]
-            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Alteração salva." if updated in ("password", "status") else ""
+            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Usuário cadastrado." if updated == "user" else "Alteração salva." if updated in ("password", "status") else ""
             self.admin_page(session, notice)
             return
         if request.path == "/onts.txt":
@@ -483,7 +504,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         payload = json.dumps(dashboard_olts(), ensure_ascii=False).replace("</", "<\\/")
-        admin_link = '<a href="/admin">Gerenciar usuários</a>' if session["role"] == "admin" else ""
+        admin_link = '<a href="/options">Opções</a>' if session["role"] in ("superadmin", "admin") else ""
         body = (HTML.replace("__OLTS_DATA__", payload)
                 .replace("__USERNAME__", html.escape(session["username"]))
                 .replace("__ADMIN_LINK__", admin_link)
