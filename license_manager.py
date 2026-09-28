@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/var/lib/olt-vision"))
 LICENSE_FILE = Path(os.environ.get("LICENSE_FILE", "/etc/olt-vision/license.env"))
 STATE_FILE = DATA_ROOT / "license-state.json"
-API_URL = os.environ.get("LICENSE_API_URL", "http://163.245.211.182:10100/api/v1")
+API_URL = os.environ.get("LICENSE_API_URL", "https://lvllicencas.lvltech.com.br/api/v1")
 PRODUCT = os.environ.get("LICENSE_PRODUCT", "LVL - gerenciador de OLTs")
 LOCK = threading.Lock()
 MEMORY = {"checked": None, "status": None}
@@ -55,7 +55,8 @@ def set_license_key(value):
 
 def post(path, payload):
     request = Request(API_URL.rstrip("/") + path, data=json.dumps(payload).encode("utf-8"), method="POST",
-                      headers={"Content-Type": "application/json", "Accept": "application/json"})
+                      headers={"Content-Type": "application/json", "Accept": "application/json",
+                               "User-Agent": "LVL-OLT-License/1.0"})
     try:
         with urlopen(request, timeout=10) as response: return json.loads(response.read().decode("utf-8")), response.status
     except HTTPError as exc:
@@ -101,7 +102,7 @@ def status(force=False):
         else:
             fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()
             if state.get("key_fingerprint") != fingerprint:
-                for field in ("last_validated_at", "expires_at", "check_again_after_hours", "offline_grace_days", "host_limit", "hosts_in_use"):
+                for field in ("last_validated_at", "expires_at", "check_again_after_hours", "offline_grace_days", "host_limit", "hosts_in_use", "host_claimed"):
                     state.pop(field, None)
                 state["key_fingerprint"] = fingerprint
             identifier = host_id(state)
@@ -118,7 +119,10 @@ def status(force=False):
                           "host_limit": state.get("host_limit"), "hosts_in_use": state.get("hosts_in_use")}
             else:
                 try:
-                    host, error = claim(key, state)
+                    # A vaga é reservada uma única vez por chave/instalação. Repetir
+                    # esse POST em cada validação pode ser bloqueado pelo validador.
+                    already_claimed = bool(state.get("host_claimed")) or (state.get("installation_id") and state.get("host_limit") is not None)
+                    host, error = ({"host_limit": state.get("host_limit"), "hosts_in_use": state.get("hosts_in_use")}, None) if already_claimed else claim(key, state)
                     if error:
                         result = {"active": False, "mode": "host_limit", "message": error}
                     else:
@@ -130,7 +134,7 @@ def status(force=False):
                         else:
                             state.update({"key_fingerprint": fingerprint, "last_validated_at": current.isoformat(), "expires_at": answer.get("expires_at"),
                                           "check_again_after_hours": answer.get("check_again_after_hours", 24), "offline_grace_days": answer.get("offline_grace_days", 0),
-                                          "host_limit": host.get("host_limit"), "hosts_in_use": host.get("hosts_in_use")})
+                                          "host_limit": host.get("host_limit"), "hosts_in_use": host.get("hosts_in_use"), "host_claimed": True})
                             save_json(STATE_FILE, state)
                             result = {"active": True, "mode": "valid", "message": "Licença válida.", "expires_at": answer.get("expires_at"),
                                       "last_validated_at": state["last_validated_at"], "host_limit": host.get("host_limit"), "hosts_in_use": host.get("hosts_in_use")}
