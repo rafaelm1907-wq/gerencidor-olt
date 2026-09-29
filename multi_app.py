@@ -52,7 +52,7 @@ def read_olt(config):
               "pons": [], "onts": [], "interfaces": [], "temperatures": [],
               "status": "aguardando", "collected_at": None, "ont_collected_at": None,
               "fast_collected_at": None, "collection_warning": None,
-              "collection_note": config.get("collection_note")}
+              "collection_note": config.get("collection_note") if "recomenda" not in config.get("collection_note", "").lower() else None}
     path = DATA_ROOT / f"{config['id']}.db"
     if not path.exists(): return result
     try:
@@ -226,6 +226,8 @@ class Handler(BaseHTTPRequestHandler):
         for item in configured_olts():
             info = olt_registry.interval_info(item)
             telegram = olt_registry.telegram_info(item)
+            access = olt_registry.access_info(item)
+            collection = olt_registry.collection_info(item)
             token_placeholder = "Novo token (mantém o atual)" if telegram["configured"] else "Token do bot Telegram"
             existing_parts.append(f'<li class="olt-entry"><div class="olt-heading"><strong>{html.escape(item["name"])}</strong> · {html.escape(item["host"])}</div>'
                                   f'<form method="post" action="/options/olts/interval" class="interval-form"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}"><input type="hidden" name="olt_id" value="{html.escape(item["id"])}">'
@@ -233,6 +235,13 @@ class Handler(BaseHTTPRequestHandler):
                                   f'<small>Recomendado: {info["recommended_minutes"]} min · mínimo: {info["minimum_minutes"]} min</small><button type="submit">Salvar para o próximo ciclo</button></form>'
                                   f'<form method="post" action="/options/olts/telegram" class="telegram-form"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}"><input type="hidden" name="olt_id" value="{html.escape(item["id"])}">'
                                   f'<label>Telegram</label><input name="telegram_bot_token" type="password" maxlength="256" placeholder="{token_placeholder}"><input name="telegram_chat_id" maxlength="24" value="{html.escape(telegram["chat_id"])}" placeholder="ID do grupo"><small>{"Configurado" if telegram["configured"] else "Não configurado"} · salva somente após teste</small><button type="submit">Salvar e testar Telegram</button></form></li>')
+            existing_parts[-1] = existing_parts[-1][:-5] + (
+                f'<form method="post" action="/options/olts/access" class="access-form" style="display:grid;grid-template-columns:110px 120px 100px minmax(150px,1fr) minmax(180px,1fr) minmax(150px,1fr) auto;gap:8px;align-items:end;margin:12px 0 4px"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}"><input type="hidden" name="olt_id" value="{html.escape(item["id"])}">'
+                f'<label>Acesso CLI</label><select name="access_protocol"><option value="telnet"{" selected" if access["protocol"] == "telnet" else ""}>Telnet</option><option value="ssh"{" selected" if access["protocol"] == "ssh" else ""}>SSH</option></select><input name="access_port" type="number" min="1" max="65535" value="{html.escape(str(access["port"]))}" placeholder="Porta"><input name="access_username" maxlength="64" value="{html.escape(access["username"])}" placeholder="Usuário" required><input name="access_password" type="password" maxlength="128" placeholder="Nova senha (mantém a atual)"><small>{"Senha configurada" if access["password_configured"] else "Informe uma senha"} · usada na próxima conexão</small><button type="submit">Salvar acesso</button></form></li>'
+            )
+            existing_parts[-1] = existing_parts[-1][:-5] + (
+                f'<form method="post" action="/options/olts/collection" class="interval-form"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}"><input type="hidden" name="olt_id" value="{html.escape(item["id"])}"><label>Coletas</label><small>{"Pausadas" if collection["paused"] else "Ativas"} · SNMP, ONTs e VLANs</small><input type="hidden" name="enabled" value="{"1" if collection["paused"] else "0"}"><button type="submit">{"Retomar coletas" if collection["paused"] else "Pausar coletas"}</button></form></li>'
+            )
         existing = "".join(existing_parts) or "<li>Nenhuma OLT cadastrada.</li>"
         user_rows = "".join(f'<li><strong>{html.escape(item["username"])}</strong> · {html.escape(item["role"].replace("superadmin", "Superadmin").replace("viewer", "Visualização").replace("admin", "Admin"))} · {"Ativo" if item["enabled"] else "Desativado"}</li>' for item in users) or "<li>Nenhum usuário cadastrado.</li>"
         password_targets = "".join(f'<option value="{html.escape(item["username"])}">{html.escape(item["username"])}</option>' for item in users)
@@ -413,6 +422,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.redirect("/options?updated=telegram")
             return
+        if path == "/options/olts/access":
+            try:
+                olt_registry.update_access(form.get("olt_id", ""), form.get("access_protocol", ""),
+                                           form.get("access_username", ""), form.get("access_password", ""),
+                                           form.get("access_port", ""))
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                self.admin_page(session, str(exc), status=400)
+                return
+            self.redirect("/options?updated=access")
+            return
+        if path == "/options/olts/collection":
+            try:
+                olt_registry.set_collection_state(form.get("olt_id", ""), form.get("enabled") == "1")
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                self.admin_page(session, str(exc), status=400)
+                return
+            self.redirect("/options?updated=" + ("collection-resumed" if form.get("enabled") == "1" else "collection-paused"))
+            return
         if path == "/admin/olts/probe":
             try:
                 discovery = olt_registry.probe(form.get("ip", ""), form.get("community", ""), form.get("name", ""),
@@ -545,7 +572,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(403)
                 return
             updated = parse_qs(request.query).get("updated", [""])[0]
-            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Intervalo salvo; será usado no próximo ciclo de coleta." if updated == "interval" else "Telegram salvo e testado com sucesso." if updated == "telegram" else "Usuário cadastrado." if updated == "user" else "Senha alterada." if updated == "password" else "Alteração salva." if updated == "status" else ""
+            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Intervalo salvo; será usado no próximo ciclo de coleta." if updated == "interval" else "Telegram salvo e testado com sucesso." if updated == "telegram" else "Acesso salvo; a coleta iniciou um novo ciclo." if updated == "access" else "Coletas retomadas." if updated == "collection-resumed" else "Coletas pausadas para esta OLT." if updated == "collection-paused" else "Usuário cadastrado." if updated == "user" else "Senha alterada." if updated == "password" else "Alteração salva." if updated == "status" else ""
             self.admin_page(session, notice)
             return
         if request.path == "/onts.txt":

@@ -106,6 +106,8 @@ def main():
     while True:
         started = time.monotonic()
         for olt in configured_olts():
+            if olt.get("collection_paused", False):
+                continue
             community = community_for(olt["id"])
             if started - status_at >= INTERVAL:
                 try: save(olt["id"], statuses=read_pons(olt["host"], community))

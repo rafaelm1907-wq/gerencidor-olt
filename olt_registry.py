@@ -156,6 +156,69 @@ def _write_env(path, values):
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
 
+def _env_text(values, key, default=""):
+    value = values.get(key, default)
+    try:
+        return json.loads(value) if isinstance(value, str) and value.startswith('"') else value
+    except json.JSONDecodeError:
+        return value
+
+def access_info(config):
+    """Dados seguros para a tela; a senha nunca deixa o servidor."""
+    try:
+        _, values = _read_env(config["id"])
+    except ValueError:
+        values = {}
+    return {"protocol": _env_text(values, "ACCESS_PROTOCOL", config.get("access_protocol", "telnet")).lower(),
+            "port": _env_text(values, "ACCESS_PORT", ""), "username": _env_text(values, "ACCESS_USERNAME", ""),
+            "password_configured": bool(_env_text(values, "ACCESS_PASSWORD", ""))}
+
+def update_access(identifier, protocol, username, password, port=""):
+    """Atualiza a credencial que será usada na próxima conexão CLI."""
+    configs = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config = next((item for item in configs if item.get("id") == identifier), None)
+    if not config: raise ValueError("OLT não encontrada.")
+    path, values = _read_env(identifier)
+    protocol = protocol.strip().lower() or _env_text(values, "ACCESS_PROTOCOL", config.get("access_protocol", "telnet"))
+    username = username.strip() or _env_text(values, "ACCESS_USERNAME", "")
+    password = password or _env_text(values, "ACCESS_PASSWORD", "")
+    port = port if str(port).strip() else _env_text(values, "ACCESS_PORT", "")
+    protocol, username, password, access_port = validate_access(protocol, username, password, port)
+    values.update({"ACCESS_PROTOCOL": protocol, "ACCESS_USERNAME": json.dumps(username),
+                   "ACCESS_PASSWORD": json.dumps(password), "ACCESS_PORT": str(access_port)})
+    _write_env(path, values)
+    config["access_protocol"] = protocol
+    config["collection_paused"] = False
+    fd, temp_name = tempfile.mkstemp(prefix=".olts-", dir=CONFIG_PATH.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream: json.dump(configs, stream, ensure_ascii=False, indent=2)
+        os.chmod(temp_name, 0o644); os.replace(temp_name, CONFIG_PATH)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+    # Reiniciar zera a espera do ciclo anterior e reativa coletores pausados.
+    subprocess.run(["systemctl", "restart", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service"],
+                   check=True, capture_output=True, text=True, timeout=30)
+    return {"protocol": protocol, "username": username, "port": access_port}
+
+def collection_info(config):
+    return {"paused": bool(config.get("collection_paused", False))}
+
+def set_collection_state(identifier, enabled):
+    """Pausa/retoma leituras completas e permite ao coletor rápido ignorar a OLT."""
+    configs = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config = next((item for item in configs if item.get("id") == identifier), None)
+    if not config: raise ValueError("OLT não encontrada.")
+    config["collection_paused"] = not enabled
+    fd, temp_name = tempfile.mkstemp(prefix=".olts-", dir=CONFIG_PATH.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream: json.dump(configs, stream, ensure_ascii=False, indent=2)
+        os.chmod(temp_name, 0o644); os.replace(temp_name, CONFIG_PATH)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+    subprocess.run(["systemctl", "start" if enabled else "stop", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service"],
+                   check=True, capture_output=True, text=True, timeout=30)
+    return enabled
+
 def validate_telegram(token, chat_id):
     token, chat_id = token.strip(), chat_id.strip()
     if not token or len(token) > 256 or any(char.isspace() for char in token) or ":" not in token:
