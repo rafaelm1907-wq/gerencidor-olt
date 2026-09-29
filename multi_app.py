@@ -185,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
         license_status = license_manager.status()
         license_line = license_status.get("message", "Estado desconhecido")
         if license_status.get("expires_at"): license_line += f' Vencimento: {license_status["expires_at"][:10]}.'
-        if license_status.get("host_limit") is not None: license_line += f' Hosts: {license_status.get("hosts_in_use", 0)}/{license_status["host_limit"]}.'
+        if license_status.get("host_limit") is not None: license_line += f' OLTs licenciadas: {license_status.get("hosts_in_use", 0)}/{license_status["host_limit"]}.'
         discovery_html = ""
         if discovery:
             boards = ", ".join(discovery["boards"])
@@ -366,7 +366,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/admin/license/validate":
             state = license_manager.status(force=True)
-            self.admin_page(session, state.get("message", "Validação concluída."))
+            if state.get("active"):
+                try:
+                    slots = license_manager.sync_olts(configured_olts())
+                    state = license_manager.status(force=True)
+                    message = f'Licença validada. OLTs licenciadas: {slots.get("hosts_in_use", 0)}/{slots.get("host_limit", 0)}.'
+                except (ValueError, OSError) as exc:
+                    message = f'Licença validada, mas não foi possível sincronizar as OLTs: {exc}'
+            else:
+                message = state.get("message", "Validação concluída.")
+            self.admin_page(session, message)
             return
         if path == "/options/users/add":
             try:

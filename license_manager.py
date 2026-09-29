@@ -2,12 +2,12 @@
 import hashlib
 import json
 import os
-import socket
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "/var/lib/olt-vision"))
@@ -65,6 +65,16 @@ def post(path, payload):
         return detail, exc.code
     except (URLError, OSError, ValueError) as exc: raise OSError(str(exc)) from exc
 
+def get(path):
+    request = Request(API_URL.rstrip("/") + path, headers={"Accept": "application/json", "User-Agent": "LVL-OLT-License/1.0"})
+    try:
+        with urlopen(request, timeout=10) as response: return json.loads(response.read().decode("utf-8")), response.status
+    except HTTPError as exc:
+        try: detail = json.loads(exc.read().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError): detail = {"reason": f"HTTP {exc.code}"}
+        return detail, exc.code
+    except (URLError, OSError, ValueError) as exc: raise OSError(str(exc)) from exc
+
 def host_id(state):
     installation = state.get("installation_id")
     if not installation:
@@ -73,15 +83,46 @@ def host_id(state):
     digest = hashlib.sha256(("lvl-olt-host:" + installation).encode("utf-8")).hexdigest()
     return digest
 
-def claim(key, state):
-    identifier = host_id(state)
-    data, http_status = post("/hosts/claim", {"license_key": key, "product": PRODUCT, "host_id": identifier,
-                                                "host_name": socket.gethostname()[:256]})
+def olt_host_id(olt_id):
+    return "olt:" + hashlib.sha256((PRODUCT + ":" + olt_id).encode("utf-8")).hexdigest()
+
+def claim_olt(olt_id, name, address):
+    key = license_key()
+    if not key: raise ValueError("Ative uma licença antes de cadastrar OLTs.")
+    data, http_status = post("/hosts/claim", {"license_key": key, "product": PRODUCT, "host_id": olt_host_id(olt_id),
+                                                "host_name": f"OLT · {name} ({address})"[:256]})
     if http_status != 200 or data.get("valid") is not True:
-        reason = data.get("reason", "não foi possível reservar este host")
-        if reason == "host_limit_reached": reason = "limite de hosts desta licença atingido"
-        return None, reason
-    return data, None
+        reason = data.get("reason", "não foi possível reservar esta OLT")
+        if reason == "host_limit_reached": reason = "limite de OLTs desta licença atingido"
+        raise ValueError(reason)
+    return data
+
+def release_olt(olt_id):
+    key = license_key()
+    if not key: return None
+    data, status = post("/hosts/release", {"license_key": key, "product": PRODUCT, "host_id": olt_host_id(olt_id)})
+    return data if status == 200 and data.get("valid") else None
+
+def sync_olts(olts):
+    """Migra a vaga legada da VM e reserva uma vaga para cada OLT existente."""
+    with LOCK:
+        state = load_json(STATE_FILE); key = license_key()
+        if not key: raise ValueError("Licença não configurada.")
+        if state.get("host_claimed") and not state.get("legacy_host_released"):
+            data, status = post("/hosts/release", {"license_key": key, "product": PRODUCT, "host_id": host_id(state)})
+            if status != 200 or data.get("valid") is not True:
+                raise ValueError("Não foi possível migrar a vaga antiga da instalação.")
+            state["legacy_host_released"] = True
+        for olt in olts:
+            claim_olt(olt["id"], olt.get("name", olt["id"]), olt.get("host", ""))
+        data, status = get("/hosts/status?" + urlencode({"license_key": key, "product": PRODUCT}))
+        if status != 200 or data.get("valid") is not True: raise ValueError("Não foi possível consultar as OLTs licenciadas.")
+        state["hosts_in_use"] = data.get("hosts_in_use", 0)
+        state["host_limit"] = data.get("host_limit", state.get("host_limit"))
+        state["legacy_host_released"] = True
+        save_json(STATE_FILE, state)
+        MEMORY.update({"checked": None, "status": None})
+        return data
 
 def offline_status(state, error):
     last = parse_time(state.get("last_validated_at")); grace = int(state.get("offline_grace_days", 0) or 0); expires = parse_time(state.get("expires_at"))
@@ -102,7 +143,7 @@ def status(force=False):
         else:
             fingerprint = hashlib.sha256(key.encode("utf-8")).hexdigest()
             if state.get("key_fingerprint") != fingerprint:
-                for field in ("last_validated_at", "expires_at", "check_again_after_hours", "offline_grace_days", "host_limit", "hosts_in_use", "host_claimed"):
+                for field in ("last_validated_at", "expires_at", "check_again_after_hours", "offline_grace_days", "host_limit", "hosts_in_use", "host_claimed", "legacy_host_released"):
                     state.pop(field, None)
                 state["key_fingerprint"] = fingerprint
             identifier = host_id(state)
@@ -119,25 +160,18 @@ def status(force=False):
                           "host_limit": state.get("host_limit"), "hosts_in_use": state.get("hosts_in_use")}
             else:
                 try:
-                    # A vaga é reservada uma única vez por chave/instalação. Repetir
-                    # esse POST em cada validação pode ser bloqueado pelo validador.
-                    already_claimed = bool(state.get("host_claimed")) or (state.get("installation_id") and state.get("host_limit") is not None)
-                    host, error = ({"host_limit": state.get("host_limit"), "hosts_in_use": state.get("hosts_in_use")}, None) if already_claimed else claim(key, state)
-                    if error:
-                        result = {"active": False, "mode": "host_limit", "message": error}
+                    answer, code = post("/validate", {"license_key": key, "product": PRODUCT, "device_id": identifier})
+                    expires = parse_time(answer.get("expires_at"))
+                    valid = code == 200 and answer.get("valid") is True and answer.get("product") == PRODUCT and (not expires or current <= expires)
+                    if not valid:
+                        result = {"active": False, "mode": "invalid", "message": "A licença não é válida para este produto ou está expirada."}
                     else:
-                        answer, code = post("/validate", {"license_key": key, "product": PRODUCT, "device_id": identifier})
-                        expires = parse_time(answer.get("expires_at"))
-                        valid = code == 200 and answer.get("valid") is True and answer.get("product") == PRODUCT and (not expires or current <= expires)
-                        if not valid:
-                            result = {"active": False, "mode": "invalid", "message": "A licença não é válida para este produto ou está expirada."}
-                        else:
-                            state.update({"key_fingerprint": fingerprint, "last_validated_at": current.isoformat(), "expires_at": answer.get("expires_at"),
-                                          "check_again_after_hours": answer.get("check_again_after_hours", 24), "offline_grace_days": answer.get("offline_grace_days", 0),
-                                          "host_limit": answer.get("host_limit", host.get("host_limit")), "hosts_in_use": host.get("hosts_in_use"), "host_claimed": True})
-                            save_json(STATE_FILE, state)
-                            result = {"active": True, "mode": "valid", "message": "Licença válida.", "expires_at": answer.get("expires_at"),
-                                      "last_validated_at": state["last_validated_at"], "host_limit": state.get("host_limit"), "hosts_in_use": host.get("hosts_in_use")}
+                        state.update({"key_fingerprint": fingerprint, "last_validated_at": current.isoformat(), "expires_at": answer.get("expires_at"),
+                                      "check_again_after_hours": answer.get("check_again_after_hours", 24), "offline_grace_days": answer.get("offline_grace_days", 0),
+                                      "host_limit": answer.get("host_limit", state.get("host_limit")), "hosts_in_use": state.get("hosts_in_use", 0)})
+                        save_json(STATE_FILE, state)
+                        result = {"active": True, "mode": "valid", "message": "Licença válida.", "expires_at": answer.get("expires_at"),
+                                  "last_validated_at": state["last_validated_at"], "host_limit": state.get("host_limit"), "hosts_in_use": state.get("hosts_in_use", 0)}
                 except OSError as exc: result = offline_status(state, str(exc))
         MEMORY.update({"checked": current, "status": result})
         return result

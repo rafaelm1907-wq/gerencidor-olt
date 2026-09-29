@@ -258,6 +258,8 @@ def register(discovery, poll_minutes=None):
     ENV_ROOT.mkdir(parents=True, exist_ok=True)
     env_path = ENV_ROOT / f"{identifier}.env"
     if env_path.exists(): raise ValueError("Já existe configuração para este endereço.")
+    import license_manager
+    license_manager.claim_olt(identifier, name, ip)
     delay = (len(olts) * 30) % 300
     if not discovery.get("ready"): raise ValueError("O diagnóstico de acesso ainda não foi aprovado.")
     recommended = min(600, int(discovery["cli"]["recommended_interval"]))
@@ -295,6 +297,7 @@ def register(discovery, poll_minutes=None):
         services.append("olt-telegram.service")
     started = subprocess.run(services, capture_output=True, text=True, timeout=20)
     if started.returncode:
+        license_manager.release_olt(identifier)
         raise RuntimeError("OLT cadastrada, mas a coleta não iniciou. Verifique o serviço do coletor.")
     if discovery.get("telegram_bot_token"):
         subprocess.run(["systemctl", "restart", "olt-telegram.service"], capture_output=True, text=True, timeout=20)
