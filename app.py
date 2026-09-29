@@ -13,6 +13,8 @@ OLT_HOST = os.environ.get("OLT_HOST", "")
 COMMUNITY = os.environ.get("SNMP_COMMUNITY", "")
 INTERVAL = int(os.environ.get("POLL_INTERVAL", "120"))
 DB_PATH = os.environ.get("DATABASE_PATH", "/var/lib/olt-vision/olt-vision.db")
+CLI_LOCK_PATH = Path(os.environ.get("CLI_LOCK_PATH", str(Path(DB_PATH).with_suffix(".cli.lock"))))
+ONT_PRIORITY_PATH = Path(os.environ.get("ONT_PRIORITY_PATH", str(Path(DB_PATH).with_suffix(".ont-priority"))))
 SERVE_HTTP = os.environ.get("SERVE_HTTP", "1") == "1"
 START_DELAY = int(os.environ.get("START_DELAY", "0"))
 COLLECTOR_LOCK_PATH = os.environ.get("COLLECTOR_LOCK_PATH", "")
@@ -32,6 +34,22 @@ TELNET_ONT_OIDS = ("ont_rx", "ont_disconnect", "ont_status", "ont_temp")
 def cli_session(timeout=45):
     cls = HuaweiSSH if ACCESS_PROTOCOL == "ssh" else HuaweiTelnet
     return cls(OLT_HOST, ACCESS_USERNAME, ACCESS_PASSWORD, port=ACCESS_PORT, timeout=timeout)
+
+def collect_telnet_onts_with_priority(pons):
+    """Reserva a CLI desta OLT para ONTs; VLANs devem ceder este acesso."""
+    import fcntl
+    ONT_PRIORITY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ONT_PRIORITY_PATH.write_text(f"{os.getpid()} {time.time()}\n", encoding="ascii")
+    try:
+        with open(CLI_LOCK_PATH, "a+b") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                return telnet_ont_data(pons)
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+    finally:
+        try: ONT_PRIORITY_PATH.unlink()
+        except FileNotFoundError: pass
 
 OIDS = {
     "pon_status": "1.3.6.1.4.1.2011.6.128.1.1.2.21.1.10",
@@ -595,7 +613,7 @@ def collect():
         telnet_onts, vlan_map = {}, {}
         if skipped_ont_oids:
             try:
-                telnet_onts = telnet_ont_data(pons)
+                telnet_onts = collect_telnet_onts_with_priority(pons)
                 if raw["ont_description"] and not telnet_onts:
                     raise RuntimeError("Telnet não retornou ONTs; preservando coleta SNMP")
                 print(f"{OLT_HOST} Telnet ONTs: {len(telnet_onts)} registros", flush=True)
