@@ -29,6 +29,7 @@ HTML = (ROOT / "multi_index.html").read_text(encoding="utf-8")
 LOGIN_HTML = (ROOT / "login.html").read_text(encoding="utf-8")
 ADMIN_HTML = (ROOT / "admin.html").read_text(encoding="utf-8")
 LICENSE_HTML = (ROOT / "license.html").read_text(encoding="utf-8")
+CHANGE_PASSWORD_HTML = (ROOT / "change_password.html").read_text(encoding="utf-8")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
 VIEWER_USERNAME = os.environ.get("VIEWER_USERNAME", "viewer")
 CACHE = {"at": 0.0, "olts": [], "refreshing": False}
@@ -268,6 +269,12 @@ class Handler(BaseHTTPRequestHandler):
                 .replace("__STATUS_CLASS__", "ok" if state.get("active") else "error"))
         self.send_body(status, body)
 
+    def change_password_page(self, session, error="", status=200):
+        body = (CHANGE_PASSWORD_HTML.replace("__CSRF__", html.escape(session["csrf"]))
+                .replace("__USERNAME__", html.escape(session["username"]))
+                .replace("__ERROR__", html.escape(error)))
+        self.send_body(status, body)
+
     def form(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -311,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.login_page("Limite de sessões simultâneas atingido para este usuário.", 403)
                 return
             flags = "; Secure" if COOKIE_SECURE else ""
-            self.redirect("/", f"olt_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={auth_store.SESSION_SECONDS}{flags}")
+            self.redirect("/change-password" if user.get("must_change_password") else "/", f"olt_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={auth_store.SESSION_SECONDS}{flags}")
             return
         session = self.session()
         if not session:
@@ -328,6 +335,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if session["role"] not in ("superadmin", "admin"):
             self.send_error(403)
+            return
+        if path == "/change-password":
+            try:
+                auth_store.change_own_password(session["id"], form.get("password", ""))
+            except ValueError as exc:
+                self.change_password_page(session, str(exc), 400)
+                return
+            flags = "; Secure" if COOKIE_SECURE else ""
+            self.redirect("/login", f"olt_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{flags}")
             return
         if path == "/admin/license/validate":
             state = license_manager.status(force=True)
@@ -415,6 +431,12 @@ class Handler(BaseHTTPRequestHandler):
         if not session:
             if request.path == "/api/state": self.send_body(401, b"{}", "application/json; charset=utf-8")
             else: self.redirect("/login")
+            return
+        if request.path == "/change-password":
+            self.change_password_page(session)
+            return
+        if session.get("must_change_password"):
+            self.redirect("/change-password")
             return
         if request.path == "/api/autofind":
             olt_id = parse_qs(request.query).get("olt", [None])[0]

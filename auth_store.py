@@ -35,6 +35,7 @@ def initialize():
             salt BLOB NOT NULL, password_hash BLOB NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 1,
             created_by INTEGER,
+            must_change_password INTEGER NOT NULL DEFAULT 0,
             created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
         );
         CREATE TABLE IF NOT EXISTS sessions (
@@ -60,6 +61,7 @@ def initialize():
                 role TEXT NOT NULL CHECK(role IN ('superadmin','admin','viewer')),
                 salt BLOB NOT NULL, password_hash BLOB NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1, created_by INTEGER,
+                must_change_password INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)""")
             db.execute("""INSERT INTO users_new(id,username,role,salt,password_hash,enabled,created_at,updated_at)
                         SELECT id,username,CASE WHEN role='admin' THEN 'superadmin' ELSE 'viewer' END,
@@ -67,18 +69,21 @@ def initialize():
             db.execute("DROP TABLE users")
             db.execute("ALTER TABLE users_new RENAME TO users")
             db.execute("PRAGMA foreign_keys=ON")
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+        if "must_change_password" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0")
     os.chmod(DB_PATH, 0o600)
 
 def password_hash(password, salt):
     return hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
 
-def seed_user(username, password, role):
+def seed_user(username, password, role, must_change_password=False):
     if not password or len(password) < 8: raise ValueError("Senha deve ter ao menos 8 caracteres")
     now = int(time.time())
     salt = os.urandom(16)
     with database() as db:
-        db.execute("INSERT OR IGNORE INTO users(username,role,salt,password_hash,created_at,updated_at) VALUES(?,?,?,?,?,?)",
-                   (username,role,salt,password_hash(password,salt),now,now))
+        db.execute("INSERT OR IGNORE INTO users(username,role,salt,password_hash,must_change_password,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                   (username,role,salt,password_hash(password,salt),int(must_change_password),now,now))
 
 def create_user(actor, username, password, role):
     username = (username or "").strip()
@@ -123,7 +128,7 @@ def authenticate(username, password, ip):
         row = db.execute("SELECT * FROM users WHERE username=?",(username,)).fetchone()
         if row and row["enabled"] and hmac.compare_digest(password_hash(password,row["salt"]),row["password_hash"]):
             db.execute("DELETE FROM login_failures WHERE username=? AND ip=?",(username,ip))
-            return {"id":row["id"],"username":row["username"],"role":row["role"]}
+            return {"id":row["id"],"username":row["username"],"role":row["role"],"must_change_password":bool(row["must_change_password"])}
         db.execute("INSERT INTO login_failures(username,ip,created_at) VALUES(?,?,?)",(username,ip,now))
         return None
 
@@ -146,9 +151,9 @@ def current_session(token):
     if not token or len(token) > 200: return None
     digest = hashlib.sha256(token.encode()).hexdigest()
     with database() as db:
-        row = db.execute("SELECT s.csrf,s.expires_at,u.id,u.username,u.role,u.enabled FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?",(digest,)).fetchone()
+        row = db.execute("SELECT s.csrf,s.expires_at,u.id,u.username,u.role,u.enabled,u.must_change_password FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=?",(digest,)).fetchone()
         if not row or not row["enabled"] or row["expires_at"] < int(time.time()): return None
-        return {"id":row["id"],"username":row["username"],"role":row["role"],"csrf":row["csrf"],"token":token}
+        return {"id":row["id"],"username":row["username"],"role":row["role"],"csrf":row["csrf"],"token":token,"must_change_password":bool(row["must_change_password"])}
 
 def revoke_session(token):
     if not token: return
@@ -159,7 +164,7 @@ def set_password(username, new_password):
     if len(new_password) < 8: raise ValueError("Senha deve ter ao menos 8 caracteres")
     salt = os.urandom(16)
     with database() as db:
-        db.execute("UPDATE users SET salt=?,password_hash=?,updated_at=? WHERE username=?",
+        db.execute("UPDATE users SET salt=?,password_hash=?,must_change_password=0,updated_at=? WHERE username=?",
                    (salt,password_hash(new_password,salt),int(time.time()),username))
         db.execute("DELETE FROM sessions WHERE user_id=(SELECT id FROM users WHERE username=?)",(username,))
 
@@ -171,6 +176,14 @@ def set_password_scoped(actor, username, new_password):
         raise ValueError("Administradores podem alterar somente a senha dos usuários de visualização que cadastraram")
     if actor["role"] not in ("superadmin", "admin"): raise ValueError("Sem permissão para alterar senha")
     set_password(username, new_password)
+
+def change_own_password(user_id, new_password):
+    if len(new_password) < 8: raise ValueError("Senha deve ter ao menos 8 caracteres")
+    salt = os.urandom(16)
+    with database() as db:
+        db.execute("UPDATE users SET salt=?,password_hash=?,must_change_password=0,updated_at=? WHERE id=?",
+                   (salt,password_hash(new_password,salt),int(time.time()),user_id))
+        db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
 
 def set_enabled(username, enabled):
     if username == "admin": raise ValueError("Admin não pode ser desativado")

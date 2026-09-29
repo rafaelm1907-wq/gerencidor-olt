@@ -18,7 +18,7 @@ install -d -m 0755 "$APP_DIR"
 install -d -m 0700 "$CONFIG_DIR/olts"
 install -d -m 0700 "$DATA_DIR"
 
-for file in app.py auth_store.py autofind_query.py fast_collector.py huawei_ssh.py huawei_telnet.py license_manager.py multi_app.py olt_registry.py telegram_dispatcher.py vlan_collector.py prune_history.py migrate_performance.py setup_users.py admin.html license.html login.html multi_index.html; do
+for file in app.py auth_store.py autofind_query.py fast_collector.py huawei_ssh.py huawei_telnet.py license_manager.py multi_app.py olt_registry.py telegram_dispatcher.py vlan_collector.py prune_history.py migrate_performance.py setup_users.py admin.html change_password.html license.html login.html multi_index.html; do
   install -m 0644 "$SOURCE_DIR/$file" "$APP_DIR/$file"
 done
 
