@@ -110,7 +110,10 @@ def probe(ip, community, name="", protocol="telnet", username="", password="", p
                  "telegram_chat_id":telegram_chat_id, "snmp_ok":True, "snmp_elapsed":snmp_elapsed}
     try:
         discovery["cli"] = cli_probe(ip, protocol, username, password, access_port, boards, ports)
-        discovery["ready"] = discovery["cli"]["vlan_count"] > 0 and discovery["cli"]["ont_count"] > 0
+        # Uma OLT nova ou uma placa ainda sem clientes pode retornar zero ONTs/VLANs.
+        # O cadastro depende de SNMP + login CLI válidos; as contagens são apenas
+        # diagnóstico e não devem impedir a inclusão do equipamento.
+        discovery["ready"] = discovery["cli"].get("ok") is True
     except Exception as exc:
         discovery["cli"] = {"ok":False, "error":str(exc)}
         discovery["ready"] = False

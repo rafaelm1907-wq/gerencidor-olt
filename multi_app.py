@@ -209,7 +209,7 @@ class Handler(BaseHTTPRequestHandler):
                 confirm = (f'<form method="post" action="/admin/olts/add"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}">'
                            '<button type="submit">Confirmar cadastro e iniciar coleta</button></form>')
             else:
-                confirm = '<p class="bad">Cadastro bloqueado: o teste precisa retornar ONTs e VLANs pela CLI.</p>'
+                confirm = '<p class="bad">Cadastro bloqueado: não foi possível validar o acesso de leitura pela CLI.</p>'
             discovery_html = (f'<div class="probe{("" if discovery.get("ready") else " error")}"><h3>Diagnóstico da OLT</h3>'
                               f'<p><strong>{html.escape(discovery["name"])} · {html.escape(discovery["ip"])}</strong></p>'
                               f'<div class="checks">{snmp_card}{cli_card}</div><p>Placas: {html.escape(boards)}</p>'
