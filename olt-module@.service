@@ -1,0 +1,21 @@
+[Unit]
+Description=LVL gerenciador de OLTs - inventario dos modulos de %i
+After=network-online.target olt-collector@%i.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/olt-vision
+EnvironmentFile=/etc/olt-vision.env
+EnvironmentFile=/etc/olt-vision/olts/%i.env
+Environment=MODULE_POLL_INTERVAL=3600
+ExecStart=/usr/bin/python3 /opt/olt-vision/module_collector.py
+Restart=always
+RestartSec=30
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=20%
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

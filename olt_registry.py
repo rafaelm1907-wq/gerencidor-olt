@@ -196,7 +196,7 @@ def update_access(identifier, protocol, username, password, port=""):
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
     # Reiniciar zera a espera do ciclo anterior e reativa coletores pausados.
-    subprocess.run(["systemctl", "restart", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service"],
+    subprocess.run(["systemctl", "restart", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service", f"olt-module@{identifier}.service"],
                    check=True, capture_output=True, text=True, timeout=30)
     return {"protocol": protocol, "username": username, "port": access_port}
 
@@ -215,7 +215,7 @@ def set_collection_state(identifier, enabled):
         os.chmod(temp_name, 0o644); os.replace(temp_name, CONFIG_PATH)
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
-    subprocess.run(["systemctl", "start" if enabled else "stop", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service"],
+    subprocess.run(["systemctl", "start" if enabled else "stop", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service", f"olt-module@{identifier}.service"],
                    check=True, capture_output=True, text=True, timeout=30)
     return enabled
 
@@ -355,7 +355,7 @@ def register(discovery, poll_minutes=None):
             if os.path.exists(config_temp): os.unlink(config_temp)
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
-    services = ["systemctl", "enable", "--now", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service"]
+    services = ["systemctl", "enable", "--now", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service", f"olt-module@{identifier}.service"]
     if discovery.get("telegram_bot_token"):
         services.append("olt-telegram.service")
     started = subprocess.run(services, capture_output=True, text=True, timeout=20)

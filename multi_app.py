@@ -100,6 +100,16 @@ def read_olt(config):
                     pon["vlans"] = sorted(pon_vlans.get(pon.get("index"), set()))
                 result["vlan_collected_at"] = vlan_row[0]
             try:
+                module_row = db.execute("SELECT collected_at,payload_json FROM latest_module_inventory WHERE id=1").fetchone()
+            except sqlite3.OperationalError:
+                module_row = None
+            if module_row:
+                modules = json.loads(module_row[1])
+                for pon in result["pons"]:
+                    if pon.get("sfp") in modules:
+                        pon["module"] = modules[pon["sfp"]]
+                result["module_collected_at"] = module_row[0]
+            try:
                 row = db.execute("SELECT last_ok_at,pons_json,error FROM latest_fast_status WHERE id=1").fetchone()
             except sqlite3.OperationalError:
                 row = None
