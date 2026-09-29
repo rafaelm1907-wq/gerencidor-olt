@@ -40,11 +40,11 @@ O instalador:
 1. instala Python, Paramiko, ferramentas SNMP e ping;
 2. copia a aplicação para `/opt/olt-vision`;
 3. cria `/etc/olt-vision` e `/var/lib/olt-vision`;
-4. solicita as senhas iniciais de `admin` e `viewer` sem exibi-las;
+4. cria o Superadmin inicial `admin` com senha temporária `superadmin` e exige a troca no primeiro login;
 5. habilita o painel e o coletor rápido;
 6. mantém Telegram desativado até sua configuração.
 
-Abra `http://IP-DO-SERVIDOR:6000`, entre como `admin` e acesse **Administração → Adicionar OLT**.
+Abra `http://IP-DO-SERVIDOR:6000`, ative a licença, entre como `admin` / `superadmin` e defina uma nova senha. Depois acesse **Opções → Adicionar OLT**.
 
 ## Cadastro de OLT
 
