@@ -8,6 +8,9 @@ import tempfile
 import time
 import math
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from app import pon_identity
 from huawei_telnet import HuaweiTelnet
@@ -132,7 +135,79 @@ def update_interval(identifier, minutes):
         if os.path.exists(temp_name): os.unlink(temp_name)
     return seconds
 
-def probe(ip, community, name="", protocol="telnet", username="", password="", port="", telegram_chat_id=""):
+def _read_env(identifier):
+    path = ENV_ROOT / f"{identifier}.env"
+    if not path.exists():
+        raise ValueError("Arquivo de configuração da OLT não encontrado.")
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    return path, values
+
+def _write_env(path, values):
+    fd, temp_name = tempfile.mkstemp(prefix=".olt-config-", dir=ENV_ROOT)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(f"{key}={value}" for key, value in values.items()) + "\n")
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+
+def validate_telegram(token, chat_id):
+    token, chat_id = token.strip(), chat_id.strip()
+    if not token or len(token) > 256 or any(char.isspace() for char in token) or ":" not in token:
+        raise ValueError("Informe um token de bot Telegram válido.")
+    if not re.fullmatch(r"-?\d{5,20}", chat_id):
+        raise ValueError("O ID do grupo Telegram é inválido.")
+    return token, chat_id
+
+def test_telegram(token, chat_id, name):
+    token, chat_id = validate_telegram(token, chat_id)
+    message = f"✅ Teste de integração Telegram — LVL Gerenciador de OLTs\nOLT: {name}"
+    request = Request(f"https://api.telegram.org/bot{token}/sendMessage",
+                      data=urlencode({"chat_id": chat_id, "text": message}).encode("utf-8"), method="POST")
+    try:
+        with urlopen(request, timeout=15) as response:
+            if not json.load(response).get("ok"):
+                raise ValueError("Telegram não confirmou o envio do teste.")
+    except HTTPError as exc:
+        raise ValueError("Telegram recusou o teste. Confira o token e o ID do grupo.") from exc
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        if isinstance(exc, ValueError): raise
+        raise ValueError("Não foi possível comunicar com o Telegram para realizar o teste.") from exc
+    return True
+
+def telegram_info(config):
+    try:
+        _, values = _read_env(config["id"])
+        token = values.get("TELEGRAM_BOT_TOKEN", "").strip()
+    except ValueError:
+        token = ""
+    return {"chat_id": config.get("telegram_chat_id", ""), "configured": bool(token and config.get("telegram_chat_id"))}
+
+def update_telegram(identifier, token, chat_id):
+    configs = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config = next((item for item in configs if item.get("id") == identifier), None)
+    if not config: raise ValueError("OLT não encontrada.")
+    path, values = _read_env(identifier)
+    token = token.strip() or values.get("TELEGRAM_BOT_TOKEN", "").strip()
+    token, chat_id = validate_telegram(token, chat_id)
+    test_telegram(token, chat_id, config.get("name", identifier))
+    values["TELEGRAM_BOT_TOKEN"] = token
+    _write_env(path, values)
+    config["telegram_chat_id"] = chat_id
+    fd, temp_name = tempfile.mkstemp(prefix=".olts-", dir=CONFIG_PATH.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream: json.dump(configs, stream, ensure_ascii=False, indent=2)
+        os.chmod(temp_name, 0o644); os.replace(temp_name, CONFIG_PATH)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+    return True
+
+def probe(ip, community, name="", protocol="telnet", username="", password="", port="", telegram_chat_id="", telegram_bot_token=""):
     ip, community, name = validate(ip, community, name)
     protocol, username, password, access_port = validate_access(protocol, username, password, port)
     snmp_started = time.monotonic()
@@ -148,12 +223,14 @@ def probe(ip, community, name="", protocol="telnet", username="", password="", p
     if not ports: raise ValueError("Não foi possível identificar as portas por S/F/P.")
     boards = sorted(set("/".join(port.split("/")[:2]) for port in ports), key=lambda p: tuple(int(n) for n in p.split("/")))
     snmp_elapsed = round(time.monotonic() - snmp_started, 1)
-    telegram_chat_id = telegram_chat_id.strip()
-    if telegram_chat_id and not re.fullmatch(r"-?\d{5,20}", telegram_chat_id):
-        raise ValueError("O ID do grupo Telegram é inválido.")
+    telegram_chat_id, telegram_bot_token = telegram_chat_id.strip(), telegram_bot_token.strip()
+    if bool(telegram_chat_id) != bool(telegram_bot_token):
+        raise ValueError("Informe o token do bot e o ID do grupo Telegram juntos.")
+    if telegram_chat_id: validate_telegram(telegram_bot_token, telegram_chat_id)
     discovery = {"ip":ip, "name":name, "community":community, "boards":boards, "ports":ports,
                  "protocol":protocol, "username":username, "password":password, "access_port":access_port,
-                 "telegram_chat_id":telegram_chat_id, "snmp_ok":True, "snmp_elapsed":snmp_elapsed}
+                 "telegram_chat_id":telegram_chat_id, "telegram_bot_token":telegram_bot_token,
+                 "snmp_ok":True, "snmp_elapsed":snmp_elapsed}
     try:
         discovery["cli"] = cli_probe(ip, protocol, username, password, access_port, boards, ports)
         # Uma OLT nova ou uma placa ainda sem clientes pode retornar zero ONTs/VLANs.
@@ -163,6 +240,13 @@ def probe(ip, community, name="", protocol="telnet", username="", password="", p
     except Exception as exc:
         discovery["cli"] = {"ok":False, "error":str(exc)}
         discovery["ready"] = False
+    if telegram_chat_id:
+        try:
+            test_telegram(telegram_bot_token, telegram_chat_id, name)
+            discovery["telegram"] = {"ok": True}
+        except ValueError as exc:
+            discovery["telegram"] = {"ok": False, "error": str(exc)}
+            discovery["ready"] = False
     return discovery
 
 def register(discovery, poll_minutes=None):
@@ -182,6 +266,8 @@ def register(discovery, poll_minutes=None):
     env_data = (f"OLT_HOST={ip}\nSNMP_COMMUNITY={json.dumps(community)}\nDATABASE_PATH={DATA_ROOT / (identifier + '.db')}\n"
                 f"ACCESS_PROTOCOL={protocol}\nACCESS_USERNAME={json.dumps(username)}\nACCESS_PASSWORD={json.dumps(password)}\nACCESS_PORT={access_port}\n"
                 f"POLL_INTERVAL={interval}\nSTART_DELAY={delay}\nSERVE_HTTP=0\n")
+    if discovery.get("telegram_bot_token"):
+        env_data += f"TELEGRAM_BOT_TOKEN={discovery['telegram_bot_token']}\n"
     fd, temp_name = tempfile.mkstemp(prefix=".olt-", dir=ENV_ROOT)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream: stream.write(env_data)
@@ -204,7 +290,12 @@ def register(discovery, poll_minutes=None):
             if os.path.exists(config_temp): os.unlink(config_temp)
     finally:
         if os.path.exists(temp_name): os.unlink(temp_name)
-    started = subprocess.run(["systemctl", "enable", "--now", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service"], capture_output=True, text=True, timeout=20)
+    services = ["systemctl", "enable", "--now", f"olt-collector@{identifier}.service", f"olt-vlan@{identifier}.service"]
+    if discovery.get("telegram_bot_token"):
+        services.append("olt-telegram.service")
+    started = subprocess.run(services, capture_output=True, text=True, timeout=20)
     if started.returncode:
         raise RuntimeError("OLT cadastrada, mas a coleta não iniciou. Verifique o serviço do coletor.")
+    if discovery.get("telegram_bot_token"):
+        subprocess.run(["systemctl", "restart", "olt-telegram.service"], capture_output=True, text=True, timeout=20)
     return identifier

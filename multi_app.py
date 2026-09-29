@@ -204,6 +204,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 cli_card = (f'<div class="check"><span class="bad">✕ Falha no {html.escape(protocol)}</span><br>'
                             f'<small>{html.escape(cli.get("error", "Sem resposta"))}</small></div>')
+            telegram = discovery.get("telegram")
+            telegram_card = ""
+            if telegram:
+                telegram_card = (f'<div class="check"><span class="{"ok" if telegram.get("ok") else "bad"}">'
+                                 f'{"✓ Telegram respondendo" if telegram.get("ok") else "✕ Falha no Telegram"}</span><br>'
+                                 f'<small>{"Mensagem de teste enviada" if telegram.get("ok") else html.escape(telegram.get("error", "Sem resposta"))}</small></div>')
             confirm = ""
             if discovery.get("ready"):
                 minimum, maximum = olt_registry.interval_bounds(interval)
@@ -214,15 +220,19 @@ class Handler(BaseHTTPRequestHandler):
                 confirm = '<p class="bad">Cadastro bloqueado: não foi possível validar o acesso de leitura pela CLI.</p>'
             discovery_html = (f'<div class="probe{("" if discovery.get("ready") else " error")}"><h3>Diagnóstico da OLT</h3>'
                               f'<p><strong>{html.escape(discovery["name"])} · {html.escape(discovery["ip"])}</strong></p>'
-                              f'<div class="checks">{snmp_card}{cli_card}</div><p>Placas: {html.escape(boards)}</p>'
+                              f'<div class="checks">{snmp_card}{cli_card}{telegram_card}</div><p>Placas: {html.escape(boards)}</p>'
                               f'<p>{len(discovery["ports"])} portas detectadas: {html.escape(ports)}</p>{confirm}</div>')
         existing_parts = []
         for item in configured_olts():
             info = olt_registry.interval_info(item)
-            existing_parts.append(f'<li><strong>{html.escape(item["name"])}</strong> · {html.escape(item["host"])}'
+            telegram = olt_registry.telegram_info(item)
+            token_placeholder = "Novo token (mantém o atual)" if telegram["configured"] else "Token do bot Telegram"
+            existing_parts.append(f'<li class="olt-entry"><div class="olt-heading"><strong>{html.escape(item["name"])}</strong> · {html.escape(item["host"])}</div>'
                                   f'<form method="post" action="/options/olts/interval" class="interval-form"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}"><input type="hidden" name="olt_id" value="{html.escape(item["id"])}">'
                                   f'<label>Coleta (min)</label><input name="poll_minutes" type="number" min="{info["minimum_minutes"]}" max="{info["maximum_minutes"]}" value="{info["current_minutes"]}" required>'
-                                  f'<small>Recomendado: {info["recommended_minutes"]} min · mínimo: {info["minimum_minutes"]} min</small><button type="submit">Salvar para o próximo ciclo</button></form></li>')
+                                  f'<small>Recomendado: {info["recommended_minutes"]} min · mínimo: {info["minimum_minutes"]} min</small><button type="submit">Salvar para o próximo ciclo</button></form>'
+                                  f'<form method="post" action="/options/olts/telegram" class="telegram-form"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}"><input type="hidden" name="olt_id" value="{html.escape(item["id"])}">'
+                                  f'<label>Telegram</label><input name="telegram_bot_token" type="password" maxlength="256" placeholder="{token_placeholder}"><input name="telegram_chat_id" maxlength="24" value="{html.escape(telegram["chat_id"])}" placeholder="ID do grupo"><small>{"Configurado" if telegram["configured"] else "Não configurado"} · salva somente após teste</small><button type="submit">Salvar e testar Telegram</button></form></li>')
         existing = "".join(existing_parts) or "<li>Nenhuma OLT cadastrada.</li>"
         user_rows = "".join(f'<li><strong>{html.escape(item["username"])}</strong> · {html.escape(item["role"].replace("superadmin", "Superadmin").replace("viewer", "Visualização").replace("admin", "Admin"))} · {"Ativo" if item["enabled"] else "Desativado"}</li>' for item in users) or "<li>Nenhum usuário cadastrado.</li>"
         password_targets = "".join(f'<option value="{html.escape(item["username"])}">{html.escape(item["username"])}</option>' for item in users)
@@ -384,12 +394,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.redirect("/options?updated=interval")
             return
+        if path == "/options/olts/telegram":
+            try:
+                olt_registry.update_telegram(form.get("olt_id", ""), form.get("telegram_bot_token", ""), form.get("telegram_chat_id", ""))
+                subprocess.run(["systemctl", "enable", "--now", "olt-telegram.service"], capture_output=True, text=True, timeout=20)
+                subprocess.run(["systemctl", "restart", "olt-telegram.service"], capture_output=True, text=True, timeout=20)
+            except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+                self.admin_page(session, str(exc), status=400)
+                return
+            self.redirect("/options?updated=telegram")
+            return
         if path == "/admin/olts/probe":
             try:
                 discovery = olt_registry.probe(form.get("ip", ""), form.get("community", ""), form.get("name", ""),
                                                form.get("protocol", ""), form.get("access_username", ""),
                                                form.get("access_password", ""), form.get("access_port", ""),
-                                               form.get("telegram_chat_id", ""))
+                                               form.get("telegram_chat_id", ""), form.get("telegram_bot_token", ""))
                 if any(item["host"] == discovery["ip"] for item in configured_olts()):
                     raise ValueError("Esta OLT já está cadastrada.")
             except ValueError as exc:
@@ -516,7 +536,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(403)
                 return
             updated = parse_qs(request.query).get("updated", [""])[0]
-            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Intervalo salvo; será usado no próximo ciclo de coleta." if updated == "interval" else "Usuário cadastrado." if updated == "user" else "Senha alterada." if updated == "password" else "Alteração salva." if updated == "status" else ""
+            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Intervalo salvo; será usado no próximo ciclo de coleta." if updated == "interval" else "Telegram salvo e testado com sucesso." if updated == "telegram" else "Usuário cadastrado." if updated == "user" else "Senha alterada." if updated == "password" else "Alteração salva." if updated == "status" else ""
             self.admin_page(session, notice)
             return
         if request.path == "/onts.txt":
