@@ -206,15 +206,24 @@ class Handler(BaseHTTPRequestHandler):
                             f'<small>{html.escape(cli.get("error", "Sem resposta"))}</small></div>')
             confirm = ""
             if discovery.get("ready"):
+                minimum, maximum = olt_registry.interval_bounds(interval)
                 confirm = (f'<form method="post" action="/admin/olts/add"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}">'
-                           '<button type="submit">Confirmar cadastro e iniciar coleta</button></form>')
+                           f'<label for="poll-minutes">Intervalo da coleta completa</label><input id="poll-minutes" name="poll_minutes" type="number" min="{minimum}" max="{maximum}" value="{interval // 60}" required>'
+                           f'<small>Permitido: {minimum} a {maximum} minutos. A recomendação é {interval // 60} minutos.</small><div><button type="submit">Confirmar cadastro e iniciar coleta</button></div></form>')
             else:
                 confirm = '<p class="bad">Cadastro bloqueado: não foi possível validar o acesso de leitura pela CLI.</p>'
             discovery_html = (f'<div class="probe{("" if discovery.get("ready") else " error")}"><h3>Diagnóstico da OLT</h3>'
                               f'<p><strong>{html.escape(discovery["name"])} · {html.escape(discovery["ip"])}</strong></p>'
                               f'<div class="checks">{snmp_card}{cli_card}</div><p>Placas: {html.escape(boards)}</p>'
                               f'<p>{len(discovery["ports"])} portas detectadas: {html.escape(ports)}</p>{confirm}</div>')
-        existing = "".join(f'<li>{html.escape(item["name"])} · {html.escape(item["host"])}</li>' for item in configured_olts())
+        existing_parts = []
+        for item in configured_olts():
+            info = olt_registry.interval_info(item)
+            existing_parts.append(f'<li><strong>{html.escape(item["name"])}</strong> · {html.escape(item["host"])}'
+                                  f'<form method="post" action="/options/olts/interval" class="interval-form"><input type="hidden" name="csrf" value="{html.escape(session["csrf"])}"><input type="hidden" name="olt_id" value="{html.escape(item["id"])}">'
+                                  f'<label>Coleta (min)</label><input name="poll_minutes" type="number" min="{info["minimum_minutes"]}" max="{info["maximum_minutes"]}" value="{info["current_minutes"]}" required>'
+                                  f'<small>Recomendado: {info["recommended_minutes"]} min · mínimo: {info["minimum_minutes"]} min</small><button type="submit">Salvar para o próximo ciclo</button></form></li>')
+        existing = "".join(existing_parts) or "<li>Nenhuma OLT cadastrada.</li>"
         user_rows = "".join(f'<li><strong>{html.escape(item["username"])}</strong> · {html.escape(item["role"].replace("superadmin", "Superadmin").replace("viewer", "Visualização").replace("admin", "Admin"))} · {"Ativo" if item["enabled"] else "Desativado"}</li>' for item in users) or "<li>Nenhum usuário cadastrado.</li>"
         password_targets = "".join(f'<option value="{html.escape(item["username"])}">{html.escape(item["username"])}</option>' for item in users)
         can_manage_olts = session["role"] == "superadmin"
@@ -368,6 +377,13 @@ class Handler(BaseHTTPRequestHandler):
         if session["role"] != "superadmin":
             self.send_error(403)
             return
+        if path == "/options/olts/interval":
+            try: olt_registry.update_interval(form.get("olt_id", ""), form.get("poll_minutes", ""))
+            except ValueError as exc:
+                self.admin_page(session, str(exc), status=400)
+                return
+            self.redirect("/options?updated=interval")
+            return
         if path == "/admin/olts/probe":
             try:
                 discovery = olt_registry.probe(form.get("ip", ""), form.get("community", ""), form.get("name", ""),
@@ -391,7 +407,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.admin_page(session, "Teste expirado. Faça uma nova consulta SNMP.", status=400)
                 return
             try:
-                olt_registry.register(candidate[1])
+                olt_registry.register(candidate[1], form.get("poll_minutes", ""))
             except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                 self.admin_page(session, str(exc), status=500)
                 return
@@ -500,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error(403)
                 return
             updated = parse_qs(request.query).get("updated", [""])[0]
-            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Usuário cadastrado." if updated == "user" else "Senha alterada." if updated == "password" else "Alteração salva." if updated == "status" else ""
+            notice = "OLT cadastrada. A primeira coleta pode levar alguns minutos." if updated == "olt" else "Intervalo salvo; será usado no próximo ciclo de coleta." if updated == "interval" else "Usuário cadastrado." if updated == "user" else "Senha alterada." if updated == "password" else "Alteração salva." if updated == "status" else ""
             self.admin_page(session, notice)
             return
         if request.path == "/onts.txt":

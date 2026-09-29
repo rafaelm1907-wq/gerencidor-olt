@@ -398,7 +398,21 @@ def polling_loop():
                     collect()
             finally:
                 POLL_LOCK.release()
-        time.sleep(max(0, INTERVAL - (time.monotonic() - started)))
+        while True:
+            interval = configured_interval()
+            remaining = interval - (time.monotonic() - started)
+            if remaining <= 0: break
+            time.sleep(min(5, remaining))
+
+def configured_interval():
+    identifier = "olt-" + OLT_HOST.replace(".", "-")
+    path = Path(os.environ.get("OLT_ENV_ROOT", "/etc/olt-vision/olts")) / f"{identifier}.env"
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("POLL_INTERVAL="):
+                return max(60, min(600, int(line.split("=", 1)[1])))
+    except (OSError, ValueError): pass
+    return max(60, min(600, INTERVAL))
 
 def walk(oid):
     # Alguns firmwares Huawei falham em GETBULK em tabelas GPON; GETNEXT é

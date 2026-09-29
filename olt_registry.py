@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import time
+import math
 from pathlib import Path
 
 from app import pon_identity
@@ -79,12 +80,57 @@ def cli_probe(ip, protocol, username, password, port, boards, ports):
         optical = session.command(f"display ont optical-info {pon_port} all")
         optical_count = len(re.findall(r"^\s*\d+\s+-?[\d.]+\s+[-\d.]+\s+[-\d.]+\s+-?\d+", optical, re.M))
     elapsed = time.monotonic() - started
-    if elapsed > 120 or total_onts > 2000 or len(ports) > 64: recommended = 900
+    if elapsed > 120 or total_onts > 2000 or len(ports) > 64: recommended = 600
     elif elapsed > 50 or total_onts > 1000 or len(ports) > 32: recommended = 600
     else: recommended = 300
     return {"ok": True, "elapsed": round(elapsed, 1), "ont_count": total_onts,
             "vlan_count": vlan_count, "optical_count": optical_count,
             "vlan_command": vlan_command, "recommended_interval": recommended}
+
+def interval_bounds(recommended):
+    recommended = min(600, max(60, int(recommended)))
+    minimum = max(1, math.ceil((recommended / 2) / 60))
+    return minimum, 10
+
+def chosen_interval(recommended, minutes):
+    minimum, maximum = interval_bounds(recommended)
+    try: value = int(minutes)
+    except (TypeError, ValueError): value = recommended // 60
+    if not minimum <= value <= maximum:
+        raise ValueError(f"O intervalo deve ficar entre {minimum} e {maximum} minutos para esta OLT.")
+    return value * 60
+
+def _env_interval(identifier, fallback):
+    try:
+        for line in (ENV_ROOT / f"{identifier}.env").read_text(encoding="utf-8").splitlines():
+            if line.startswith("POLL_INTERVAL="): return int(line.split("=", 1)[1])
+    except (OSError, ValueError): pass
+    return fallback
+
+def interval_info(config):
+    recommended = min(600, int(config.get("recommended_interval", 600)))
+    current = _env_interval(config["id"], recommended)
+    minimum, maximum = interval_bounds(recommended)
+    return {"recommended_minutes": recommended // 60, "current_minutes": max(1, current // 60), "minimum_minutes": minimum, "maximum_minutes": maximum}
+
+def update_interval(identifier, minutes):
+    configs = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config = next((item for item in configs if item.get("id") == identifier), None)
+    if not config: raise ValueError("OLT não encontrada.")
+    recommended = min(600, int(config.get("recommended_interval", _env_interval(identifier, 600))))
+    seconds = chosen_interval(recommended, minutes)
+    env_path = ENV_ROOT / f"{identifier}.env"
+    if not env_path.exists(): raise ValueError("Arquivo de configuração da OLT não encontrado.")
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    lines = [f"POLL_INTERVAL={seconds}" if line.startswith("POLL_INTERVAL=") else line for line in lines]
+    if not any(line.startswith("POLL_INTERVAL=") for line in lines): lines.append(f"POLL_INTERVAL={seconds}")
+    fd, temp_name = tempfile.mkstemp(prefix=".interval-", dir=ENV_ROOT)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream: stream.write("\n".join(lines) + "\n")
+        os.chmod(temp_name, 0o600); os.replace(temp_name, env_path)
+    finally:
+        if os.path.exists(temp_name): os.unlink(temp_name)
+    return seconds
 
 def probe(ip, community, name="", protocol="telnet", username="", password="", port="", telegram_chat_id=""):
     ip, community, name = validate(ip, community, name)
@@ -119,7 +165,7 @@ def probe(ip, community, name="", protocol="telnet", username="", password="", p
         discovery["ready"] = False
     return discovery
 
-def register(discovery):
+def register(discovery, poll_minutes=None):
     ip, community, name = validate(discovery["ip"], discovery["community"], discovery["name"])
     olts = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     if any(item["host"] == ip for item in olts): raise ValueError("Esta OLT já está cadastrada.")
@@ -130,7 +176,8 @@ def register(discovery):
     if env_path.exists(): raise ValueError("Já existe configuração para este endereço.")
     delay = (len(olts) * 30) % 300
     if not discovery.get("ready"): raise ValueError("O diagnóstico de acesso ainda não foi aprovado.")
-    interval = int(discovery["cli"]["recommended_interval"])
+    recommended = min(600, int(discovery["cli"]["recommended_interval"]))
+    interval = chosen_interval(recommended, poll_minutes)
     protocol, username, password, access_port = validate_access(discovery["protocol"], discovery["username"], discovery["password"], discovery["access_port"])
     env_data = (f"OLT_HOST={ip}\nSNMP_COMMUNITY={json.dumps(community)}\nDATABASE_PATH={DATA_ROOT / (identifier + '.db')}\n"
                 f"ACCESS_PROTOCOL={protocol}\nACCESS_USERNAME={json.dumps(username)}\nACCESS_PASSWORD={json.dumps(password)}\nACCESS_PORT={access_port}\n"
@@ -142,10 +189,11 @@ def register(discovery):
         os.replace(temp_name, env_path)
         config = {"id":identifier, "name":name, "host":ip, "access_protocol":protocol,
                   "ont_source":protocol, "vlan_source":protocol,
-                  "vlan_command":discovery["cli"]["vlan_command"]}
+                  "vlan_command":discovery["cli"]["vlan_command"],
+                  "recommended_interval":recommended}
         if discovery.get("telegram_chat_id"):
             config["telegram_chat_id"] = discovery["telegram_chat_id"]
-        if interval > 300: config["collection_note"] = f"Intervalo recomendado pelo diagnóstico: {interval // 60} minutos."
+        config["collection_note"] = f"Coleta configurada a cada {interval // 60} minutos; recomendação: {recommended // 60} minutos."
         olts.append(config)
         fd, config_temp = tempfile.mkstemp(prefix=".olts-", dir=CONFIG_PATH.parent)
         try:

@@ -19,4 +19,11 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(found["boards"], ["0/0", "0/1"])
         self.assertEqual(found["ports"], ["0/0/0", "0/0/1", "0/1/0"])
 
+    def test_collection_interval_is_capped_and_limited_to_half(self):
+        self.assertEqual(olt_registry.interval_bounds(900), (5, 10))
+        self.assertEqual(olt_registry.chosen_interval(600, "5"), 300)
+        self.assertEqual(olt_registry.chosen_interval(600, "10"), 600)
+        with self.assertRaises(ValueError): olt_registry.chosen_interval(600, "4")
+        with self.assertRaises(ValueError): olt_registry.chosen_interval(600, "11")
+
 if __name__ == "__main__": unittest.main()
