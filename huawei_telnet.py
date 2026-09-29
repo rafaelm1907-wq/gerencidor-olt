@@ -34,13 +34,53 @@ class HuaweiTelnet:
         if self.socket is None:
             return
         try:
-            self._send("quit")
+            self._graceful_logout()
         except OSError:
             pass
         try:
             self.socket.close()
         finally:
             self.socket = None
+
+    def _graceful_logout(self):
+        """Sai de todos os contextos e confirma o logout antes de fechar TCP.
+
+        Nas MA56xx, um único ``quit`` normalmente volta apenas de ``config``
+        para o prompt anterior. Fechar o socket nesse ponto pode deixar a OLT
+        contabilizando a sessão até o timeout de terminal.
+        """
+        self.socket.settimeout(0.5)
+        self.buffer = ""
+        for _ in range(5):
+            self._send("quit")
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    chunk = self.socket.recv(65535)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    return
+                self.buffer += chunk.decode("utf-8", "replace").replace("\x00", "")
+                lowered = self.buffer.lower()
+                if "are you sure to log out" in lowered:
+                    self._send("y")
+                    self.buffer = ""
+                    drain_deadline = time.monotonic() + 3
+                    while time.monotonic() < drain_deadline:
+                        try:
+                            if not self.socket.recv(65535):
+                                return
+                        except socket.timeout:
+                            continue
+                    return
+                if PROMPT.search(self.buffer):
+                    self.buffer = ""
+                    break
+            else:
+                # Uma resposta sem prompt pode ser a própria desconexão em
+                # firmwares que encerram imediatamente após ``quit``.
+                return
 
     def __enter__(self):
         return self.connect()
