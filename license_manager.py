@@ -134,10 +134,10 @@ def status(force=False):
                         else:
                             state.update({"key_fingerprint": fingerprint, "last_validated_at": current.isoformat(), "expires_at": answer.get("expires_at"),
                                           "check_again_after_hours": answer.get("check_again_after_hours", 24), "offline_grace_days": answer.get("offline_grace_days", 0),
-                                          "host_limit": host.get("host_limit"), "hosts_in_use": host.get("hosts_in_use"), "host_claimed": True})
+                                          "host_limit": answer.get("host_limit", host.get("host_limit")), "hosts_in_use": host.get("hosts_in_use"), "host_claimed": True})
                             save_json(STATE_FILE, state)
                             result = {"active": True, "mode": "valid", "message": "Licença válida.", "expires_at": answer.get("expires_at"),
-                                      "last_validated_at": state["last_validated_at"], "host_limit": host.get("host_limit"), "hosts_in_use": host.get("hosts_in_use")}
+                                      "last_validated_at": state["last_validated_at"], "host_limit": state.get("host_limit"), "hosts_in_use": host.get("hosts_in_use")}
                 except OSError as exc: result = offline_status(state, str(exc))
         MEMORY.update({"checked": current, "status": result})
         return result
