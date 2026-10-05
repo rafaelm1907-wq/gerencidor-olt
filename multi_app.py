@@ -48,11 +48,14 @@ def latest_nonempty(db, field):
         return None
 
 def read_olt(config):
+    interval = olt_registry.interval_info(config)
     result = {"id": config["id"], "name": config["name"], "host": config["host"],
               "pons": [], "onts": [], "interfaces": [], "temperatures": [],
               "status": "aguardando", "collected_at": None, "ont_collected_at": None,
               "fast_collected_at": None, "collection_warning": None,
-              "collection_note": config.get("collection_note") if "recomenda" not in config.get("collection_note", "").lower() else None}
+              "collection_note": config.get("collection_note") if "recomenda" not in config.get("collection_note", "").lower() else None,
+              "collection_paused": bool(config.get("collection_paused", False)),
+              "collection_interval_seconds": interval["current_minutes"] * 60}
     path = DATA_ROOT / f"{config['id']}.db"
     if not path.exists(): return result
     try:
@@ -183,8 +186,19 @@ def dashboard_olts():
             item = counts.setdefault(ont["pon_index"], {"total": 0, "online": 0, "offline": 0})
             item["total"] += 1
             if ont["status"] in ("online", "offline"): item[ont["status"]] += 1
+        age = None
+        try:
+            if olt.get("collected_at"):
+                age = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(olt["collected_at"])).total_seconds())
+        except (TypeError, ValueError):
+            pass
+        interval = max(60, int(olt.get("collection_interval_seconds", 600)))
+        delayed_after = max(interval * 1.5, interval + 120)
+        health = "paused" if olt.get("collection_paused") else "waiting" if age is None else "stale" if age > delayed_after else "ok"
         response.append({**{key:value for key,value in olt.items() if key != "onts"},
-                         "ont_count":len(olt["onts"]), "ont_counts":counts})
+                         "ont_count":len(olt["onts"]), "ont_counts":counts,
+                         "collection_health":health, "collection_age_seconds":age,
+                         "collection_delayed_after_seconds":delayed_after})
     return response
 
 class Handler(BaseHTTPRequestHandler):
